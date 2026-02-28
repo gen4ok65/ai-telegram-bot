@@ -11,13 +11,12 @@ from telegram.ext import (
     filters,
 )
 
-# ===== НАСТРОЙКИ =====
 TOKEN = os.getenv("TOKEN")
 CHANNEL_ID = os.getenv("CHANNEL_ID")
 
 logging.basicConfig(level=logging.INFO)
 
-# ===== БАЗА ДАННЫХ =====
+# ===== БАЗА =====
 conn = sqlite3.connect("posts.db", check_same_thread=False)
 cursor = conn.cursor()
 
@@ -33,7 +32,7 @@ CREATE TABLE IF NOT EXISTS posts (
 conn.commit()
 
 
-# ===== ОТПРАВКА ПОСТА =====
+# ===== ОТПРАВКА =====
 async def send_post(context: ContextTypes.DEFAULT_TYPE):
     post_id = context.job.data
 
@@ -70,29 +69,41 @@ async def send_post(context: ContextTypes.DEFAULT_TYPE):
         logging.error(f"Ошибка отправки: {e}")
 
 
+# ===== ВОССТАНОВЛЕНИЕ ЗАДАЧ =====
+def restore_jobs(app):
+    now = datetime.now()
+    cursor.execute("SELECT id, run_date FROM posts")
+    rows = cursor.fetchall()
+
+    for post_id, run_date_str in rows:
+        run_date = datetime.strptime(run_date_str, "%Y-%m-%d %H:%M:%S")
+
+        if run_date > now:
+            app.job_queue.run_once(
+                send_post,
+                run_date,
+                data=post_id
+            )
+            logging.info(f"Восстановлен пост {post_id}")
+
+
 # ===== /start =====
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Формат:\n\n"
         "01.03.2026 22:30\n"
         "Текст поста\n\n"
-        "КНОПКА: Текст | https://ссылка\n\n"
-        "/test — проверка\n"
-        "/list — список\n"
-        "/delete ID — удалить"
+        "КНОПКА: Текст | https://ссылка"
     )
 
 
 # ===== /test =====
 async def test(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        await context.bot.send_message(
-            chat_id=CHANNEL_ID,
-            text="✅ Тестовое сообщение отправлено!"
-        )
-        await update.message.reply_text("Отправлено в канал.")
-    except Exception as e:
-        await update.message.reply_text(f"Ошибка: {e}")
+    await context.bot.send_message(
+        chat_id=CHANNEL_ID,
+        text="✅ Тест работает!"
+    )
+    await update.message.reply_text("Отправлено.")
 
 
 # ===== ПЛАНИРОВАНИЕ =====
@@ -101,8 +112,7 @@ async def schedule_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = update.message.text.strip()
         lines = text.split("\n")
 
-        date_line = lines[0].strip()
-        run_date = datetime.strptime(date_line, "%d.%m.%Y %H:%M")
+        run_date = datetime.strptime(lines[0], "%d.%m.%Y %H:%M")
 
         if run_date <= datetime.now():
             await update.message.reply_text("Дата должна быть в будущем.")
@@ -114,11 +124,7 @@ async def schedule_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if "КНОПКА:" in text:
             content, button_line = text.split("КНОПКА:")
             post_text = content.split("\n", 1)[1].strip()
-
             btn = button_line.strip().split("|")
-            if len(btn) != 2:
-                await update.message.reply_text("Ошибка формата кнопки.")
-                return
 
             button_text = btn[0].strip()
             button_url = btn[1].strip()
@@ -142,46 +148,19 @@ async def schedule_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"✅ Пост #{post_id} запланирован.")
 
     except Exception as e:
-        logging.error(f"Ошибка планирования: {e}")
-        await update.message.reply_text("❌ Ошибка формата.")
+        logging.error(e)
+        await update.message.reply_text("Ошибка формата.")
 
 
-# ===== СПИСОК =====
-async def list_posts(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    cursor.execute("SELECT id, run_date FROM posts")
-    rows = cursor.fetchall()
-
-    if rows:
-        msg = "\n".join([f"#{r[0]} — {r[1]}" for r in rows])
-        await update.message.reply_text(msg)
-    else:
-        await update.message.reply_text("Нет запланированных постов.")
-
-
-# ===== УДАЛЕНИЕ =====
-async def delete_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        post_id = int(context.args[0])
-        cursor.execute("DELETE FROM posts WHERE id=?", (post_id,))
-        conn.commit()
-        await update.message.reply_text("Удалено.")
-    except:
-        await update.message.reply_text("Ошибка удаления.")
-
-
-# ===== ЗАПУСК =====
+# ===== MAIN =====
 def main():
-    app = (
-        ApplicationBuilder()
-        .token(TOKEN)
-        .build()
-    )
+    app = ApplicationBuilder().token(TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("test", test))
-    app.add_handler(CommandHandler("list", list_posts))
-    app.add_handler(CommandHandler("delete", delete_post))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, schedule_post))
+
+    restore_jobs(app)
 
     app.run_polling()
 
