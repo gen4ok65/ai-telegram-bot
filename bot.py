@@ -2,7 +2,7 @@ import os
 import sqlite3
 import logging
 from datetime import datetime
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
@@ -11,12 +11,13 @@ from telegram.ext import (
     filters,
 )
 
+# ===== НАСТРОЙКИ =====
 TOKEN = os.getenv("TOKEN")
 CHANNEL_ID = os.getenv("CHANNEL_ID")
 
 logging.basicConfig(level=logging.INFO)
 
-# ---------- БАЗА ----------
+# ===== БАЗА ДАННЫХ =====
 conn = sqlite3.connect("posts.db", check_same_thread=False)
 cursor = conn.cursor()
 
@@ -32,67 +33,69 @@ CREATE TABLE IF NOT EXISTS posts (
 conn.commit()
 
 
-# ---------- ОТПРАВКА ПОСТА ----------
+# ===== ОТПРАВКА ПОСТА =====
 async def send_post(context: ContextTypes.DEFAULT_TYPE):
     post_id = context.job.data
 
     cursor.execute("SELECT text, button_text, button_url FROM posts WHERE id=?", (post_id,))
     row = cursor.fetchone()
 
-    if row:
-        text, button_text, button_url = row
+    if not row:
+        return
 
-        try:
-            if button_text and button_url:
-                keyboard = InlineKeyboardMarkup([
-                    [InlineKeyboardButton(button_text, url=button_url)]
-                ])
-                await context.bot.send_message(
-                    chat_id=CHANNEL_ID,
-                    text=text,
-                    reply_markup=keyboard
-                )
-            else:
-                await context.bot.send_message(
-                    chat_id=CHANNEL_ID,
-                    text=text
-                )
+    text, button_text, button_url = row
 
-            cursor.execute("DELETE FROM posts WHERE id=?", (post_id,))
-            conn.commit()
+    try:
+        if button_text and button_url:
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton(button_text, url=button_url)]
+            ])
+            await context.bot.send_message(
+                chat_id=CHANNEL_ID,
+                text=text,
+                reply_markup=keyboard
+            )
+        else:
+            await context.bot.send_message(
+                chat_id=CHANNEL_ID,
+                text=text
+            )
 
-            logging.info(f"Пост {post_id} отправлен")
+        cursor.execute("DELETE FROM posts WHERE id=?", (post_id,))
+        conn.commit()
 
-        except Exception as e:
-            logging.error(f"Ошибка отправки: {e}")
+        logging.info(f"Пост {post_id} отправлен")
+
+    except Exception as e:
+        logging.error(f"Ошибка отправки: {e}")
 
 
-# ---------- /start ----------
+# ===== /start =====
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "Формат планирования:\n\n"
+        "Формат:\n\n"
         "01.03.2026 22:30\n"
         "Текст поста\n\n"
         "КНОПКА: Текст | https://ссылка\n\n"
+        "/test — проверка\n"
         "/list — список\n"
-        "/delete ID — удалить\n"
-        "/test — проверка канала"
+        "/delete ID — удалить"
     )
 
 
-# ---------- /test ----------
+# ===== /test =====
 async def test(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         await context.bot.send_message(
             chat_id=CHANNEL_ID,
-            text="✅ Проверка отправки в канал работает!"
+            text="✅ Тестовое сообщение отправлено!"
         )
-        await update.message.reply_text("Сообщение отправлено в канал.")
+        await update.message.reply_text("Отправлено в канал.")
     except Exception as e:
         await update.message.reply_text(f"Ошибка: {e}")
 
 
-# ---------- ПЛАНИРОВАНИЕ ----------
+# ===== ПЛАНИРОВАНИЕ =====
 async def schedule_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         text = update.message.text.strip()
@@ -113,6 +116,10 @@ async def schedule_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
             post_text = content.split("\n", 1)[1].strip()
 
             btn = button_line.strip().split("|")
+            if len(btn) != 2:
+                await update.message.reply_text("Ошибка формата кнопки.")
+                return
+
             button_text = btn[0].strip()
             button_url = btn[1].strip()
         else:
@@ -139,7 +146,7 @@ async def schedule_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Ошибка формата.")
 
 
-# ---------- СПИСОК ----------
+# ===== СПИСОК =====
 async def list_posts(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cursor.execute("SELECT id, run_date FROM posts")
     rows = cursor.fetchall()
@@ -151,7 +158,7 @@ async def list_posts(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Нет запланированных постов.")
 
 
-# ---------- УДАЛЕНИЕ ----------
+# ===== УДАЛЕНИЕ =====
 async def delete_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         post_id = int(context.args[0])
@@ -162,16 +169,13 @@ async def delete_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Ошибка удаления.")
 
 
-# ---------- MAIN ----------
-async def main():
+# ===== ЗАПУСК =====
+def main():
     app = (
         ApplicationBuilder()
         .token(TOKEN)
         .build()
     )
-
-    # сброс webhook и конфликтов
-    await app.bot.delete_webhook(drop_pending_updates=True)
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("test", test))
@@ -179,9 +183,8 @@ async def main():
     app.add_handler(CommandHandler("delete", delete_post))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, schedule_post))
 
-    await app.run_polling()
+    app.run_polling()
 
 
 if __name__ == "__main__":
-    import asyncio
-    asyncio.run(main())
+    main()
