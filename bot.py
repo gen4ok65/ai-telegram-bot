@@ -14,6 +14,7 @@ from telegram.ext import (
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 TOKEN = os.environ["TOKEN"]
+print("TOKEN VALUE:", TOKEN)
 HANNEL_ID = os.getenv("CHANNEL_ID")
 
 logging.basicConfig(level=logging.INFO)
