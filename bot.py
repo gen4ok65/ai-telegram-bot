@@ -1,9 +1,16 @@
 import os
 import sqlite3
 import logging
+import asyncio
 from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram.ext import (
+    ApplicationBuilder,
+    CommandHandler,
+    MessageHandler,
+    filters,
+    ContextTypes,
+)
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 TOKEN = os.getenv("TOKEN")
@@ -11,7 +18,7 @@ CHANNEL_ID = os.getenv("CHANNEL_ID")
 
 logging.basicConfig(level=logging.INFO)
 
-# база
+# база данных
 conn = sqlite3.connect("posts.db", check_same_thread=False)
 cursor = conn.cursor()
 cursor.execute("""
@@ -26,7 +33,26 @@ CREATE TABLE IF NOT EXISTS posts (
 conn.commit()
 
 scheduler = AsyncIOScheduler()
-scheduler.start()
+
+async def send_post(context: ContextTypes.DEFAULT_TYPE):
+    post_id = context.job.data
+
+    cursor.execute("SELECT text, button_text, button_url FROM posts WHERE id=?", (post_id,))
+    row = cursor.fetchone()
+
+    if row:
+        text, button_text, button_url = row
+
+        if button_text and button_url:
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton(button_text, url=button_url)]
+            ])
+            await context.bot.send_message(chat_id=CHANNEL_ID, text=text, reply_markup=keyboard)
+        else:
+            await context.bot.send_message(chat_id=CHANNEL_ID, text=text)
+
+        cursor.execute("DELETE FROM posts WHERE id=?", (post_id,))
+        conn.commit()
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
@@ -41,7 +67,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def schedule_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         text = update.message.text
-
         lines = text.split("\n")
         date_line = lines[0]
         run_date = datetime.strptime(date_line, "%d.%m.%Y %H:%M")
@@ -65,32 +90,16 @@ async def schedule_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
         conn.commit()
         post_id = cursor.lastrowid
 
-        scheduler.add_job(send_post, "date", run_date=run_date, args=[post_id])
+        context.job_queue.run_once(
+            send_post,
+            when=run_date,
+            data=post_id
+        )
 
         await update.message.reply_text(f"✅ Пост #{post_id} запланирован.")
 
-    except Exception as e:
+    except Exception:
         await update.message.reply_text("❌ Ошибка формата.")
-
-async def send_post(post_id):
-    cursor.execute("SELECT text, button_text, button_url FROM posts WHERE id=?", (post_id,))
-    row = cursor.fetchone()
-
-    if row:
-        text, button_text, button_url = row
-
-        app = ApplicationBuilder().token(TOKEN).build()
-
-        if button_text and button_url:
-            keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton(button_text, url=button_url)]
-            ])
-            await app.bot.send_message(chat_id=CHANNEL_ID, text=text, reply_markup=keyboard)
-        else:
-            await app.bot.send_message(chat_id=CHANNEL_ID, text=text)
-
-        cursor.execute("DELETE FROM posts WHERE id=?", (post_id,))
-        conn.commit()
 
 async def list_posts(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cursor.execute("SELECT id, run_date FROM posts")
@@ -111,11 +120,15 @@ async def delete_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except:
         await update.message.reply_text("Ошибка удаления.")
 
-app = ApplicationBuilder().token(TOKEN).build()
+async def main():
+    app = ApplicationBuilder().token(TOKEN).build()
 
-app.add_handler(CommandHandler("start", start))
-app.add_handler(CommandHandler("list", list_posts))
-app.add_handler(CommandHandler("delete", delete_post))
-app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, schedule_post))
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("list", list_posts))
+    app.add_handler(CommandHandler("delete", delete_post))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, schedule_post))
 
-app.run_polling()
+    await app.run_polling()
+
+if __name__ == "__main__":
+    asyncio.run(main())
