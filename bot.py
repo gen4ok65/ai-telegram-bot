@@ -13,10 +13,11 @@ from telegram.ext import (
 
 TOKEN = os.getenv("TOKEN")
 CHANNEL_ID = os.getenv("CHANNEL_ID")
+PORT = int(os.environ.get("PORT", 8080))
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 
 logging.basicConfig(level=logging.INFO)
 
-# ===== БАЗА =====
 conn = sqlite3.connect("posts.db", check_same_thread=False)
 cursor = conn.cursor()
 
@@ -32,10 +33,8 @@ CREATE TABLE IF NOT EXISTS posts (
 conn.commit()
 
 
-# ===== ОТПРАВКА =====
 async def send_post(context: ContextTypes.DEFAULT_TYPE):
     post_id = context.job.data
-
     cursor.execute("SELECT text, button_text, button_url FROM posts WHERE id=?", (post_id,))
     row = cursor.fetchone()
 
@@ -44,32 +43,25 @@ async def send_post(context: ContextTypes.DEFAULT_TYPE):
 
     text, button_text, button_url = row
 
-    try:
-        if button_text and button_url:
-            keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton(button_text, url=button_url)]
-            ])
-            await context.bot.send_message(
-                chat_id=CHANNEL_ID,
-                text=text,
-                reply_markup=keyboard
-            )
-        else:
-            await context.bot.send_message(
-                chat_id=CHANNEL_ID,
-                text=text
-            )
+    if button_text and button_url:
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton(button_text, url=button_url)]
+        ])
+        await context.bot.send_message(
+            chat_id=CHANNEL_ID,
+            text=text,
+            reply_markup=keyboard
+        )
+    else:
+        await context.bot.send_message(
+            chat_id=CHANNEL_ID,
+            text=text
+        )
 
-        cursor.execute("DELETE FROM posts WHERE id=?", (post_id,))
-        conn.commit()
-
-        logging.info(f"Пост {post_id} отправлен")
-
-    except Exception as e:
-        logging.error(f"Ошибка отправки: {e}")
+    cursor.execute("DELETE FROM posts WHERE id=?", (post_id,))
+    conn.commit()
 
 
-# ===== ВОССТАНОВЛЕНИЕ =====
 def restore_jobs(app):
     now = datetime.now()
     cursor.execute("SELECT id, run_date FROM posts")
@@ -77,22 +69,10 @@ def restore_jobs(app):
 
     for post_id, run_date_str in rows:
         run_date = datetime.strptime(run_date_str, "%Y-%m-%d %H:%M:%S")
-
         if run_date > now:
-            app.job_queue.run_once(
-                send_post,
-                run_date,
-                data=post_id
-            )
-            logging.info(f"Восстановлен пост {post_id}")
+            app.job_queue.run_once(send_post, run_date, data=post_id)
 
 
-# ===== ОБРАБОТЧИК ОШИБОК =====
-async def error_handler(update, context):
-    logging.error(f"Ошибка: {context.error}")
-
-
-# ===== /start =====
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Формат:\n\n"
@@ -102,24 +82,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-# ===== /test =====
 async def test(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await context.bot.send_message(
-        chat_id=CHANNEL_ID,
-        text="✅ Тестовое сообщение"
-    )
+    await context.bot.send_message(chat_id=CHANNEL_ID, text="✅ Тестовое сообщение")
     await update.message.reply_text("Отправлено.")
 
 
-# ===== ПЛАНИРОВАНИЕ =====
 async def schedule_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         text = update.message.text.strip()
-
-        # защита от мусорных сообщений
-        if len(text) < 16:
-            return
-
         lines = text.split("\n")
         run_date = datetime.strptime(lines[0].strip(), "%d.%m.%Y %H:%M")
 
@@ -134,7 +104,6 @@ async def schedule_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
             content, button_line = text.split("КНОПКА:")
             post_text = content.split("\n", 1)[1].strip()
             btn = button_line.strip().split("|")
-
             if len(btn) == 2:
                 button_text = btn[0].strip()
                 button_url = btn[1].strip()
@@ -148,29 +117,16 @@ async def schedule_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
         conn.commit()
 
         post_id = cursor.lastrowid
+        context.job_queue.run_once(send_post, run_date, data=post_id)
 
-        context.job_queue.run_once(
-            send_post,
-            run_date,
-            data=post_id
-        )
+        await update.message.reply_text("✅ Запланировано.")
 
-        await update.message.reply_text(f"✅ Пост #{post_id} запланирован.")
-
-    except Exception as e:
-        logging.error(e)
+    except:
         await update.message.reply_text("Ошибка формата.")
 
 
-# ===== MAIN =====
 def main():
-    app = (
-        ApplicationBuilder()
-        .token(TOKEN)
-        .build()
-    )
-
-    app.add_error_handler(error_handler)
+    app = ApplicationBuilder().token(TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("test", test))
@@ -178,8 +134,11 @@ def main():
 
     restore_jobs(app)
 
-    # КЛЮЧЕВАЯ СТРОКА ДЛЯ УСТРАНЕНИЯ КОНФЛИКТА
-    app.run_polling(drop_pending_updates=True)
+    app.run_webhook(
+        listen="0.0.0.0",
+        port=PORT,
+        webhook_url=WEBHOOK_URL,
+    )
 
 
 if __name__ == "__main__":
