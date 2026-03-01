@@ -69,7 +69,7 @@ async def send_post(context: ContextTypes.DEFAULT_TYPE):
         logging.error(f"Ошибка отправки: {e}")
 
 
-# ===== ВОССТАНОВЛЕНИЕ ЗАДАЧ =====
+# ===== ВОССТАНОВЛЕНИЕ =====
 def restore_jobs(app):
     now = datetime.now()
     cursor.execute("SELECT id, run_date FROM posts")
@@ -87,6 +87,11 @@ def restore_jobs(app):
             logging.info(f"Восстановлен пост {post_id}")
 
 
+# ===== ОБРАБОТЧИК ОШИБОК =====
+async def error_handler(update, context):
+    logging.error(f"Ошибка: {context.error}")
+
+
 # ===== /start =====
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
@@ -101,7 +106,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def test(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await context.bot.send_message(
         chat_id=CHANNEL_ID,
-        text="✅ Тест работает!"
+        text="✅ Тестовое сообщение"
     )
     await update.message.reply_text("Отправлено.")
 
@@ -110,9 +115,13 @@ async def test(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def schedule_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         text = update.message.text.strip()
-        lines = text.split("\n")
 
-        run_date = datetime.strptime(lines[0], "%d.%m.%Y %H:%M")
+        # защита от мусорных сообщений
+        if len(text) < 16:
+            return
+
+        lines = text.split("\n")
+        run_date = datetime.strptime(lines[0].strip(), "%d.%m.%Y %H:%M")
 
         if run_date <= datetime.now():
             await update.message.reply_text("Дата должна быть в будущем.")
@@ -126,8 +135,9 @@ async def schedule_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
             post_text = content.split("\n", 1)[1].strip()
             btn = button_line.strip().split("|")
 
-            button_text = btn[0].strip()
-            button_url = btn[1].strip()
+            if len(btn) == 2:
+                button_text = btn[0].strip()
+                button_url = btn[1].strip()
         else:
             post_text = text.split("\n", 1)[1].strip()
 
@@ -154,7 +164,13 @@ async def schedule_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ===== MAIN =====
 def main():
-    app = ApplicationBuilder().token(TOKEN).build()
+    app = (
+        ApplicationBuilder()
+        .token(TOKEN)
+        .build()
+    )
+
+    app.add_error_handler(error_handler)
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("test", test))
@@ -162,7 +178,8 @@ def main():
 
     restore_jobs(app)
 
-    app.run_polling()
+    # КЛЮЧЕВАЯ СТРОКА ДЛЯ УСТРАНЕНИЯ КОНФЛИКТА
+    app.run_polling(drop_pending_updates=True)
 
 
 if __name__ == "__main__":
